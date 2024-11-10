@@ -1,3 +1,4 @@
+import os
 import re
 import glob
 from typing import Callable
@@ -5,6 +6,8 @@ from datetime import datetime, timedelta
 
 import av
 import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 
 
 def get_video_duration(video_path: str) -> float:
@@ -23,75 +26,75 @@ def get_video_duration(video_path: str) -> float:
         print(f"Error: {e}")
         return None
 
+def downsample(df: pd.DataFrame, time_col, target_col, target_sr) -> pd.DataFrame:
+    """
+    Group and average entries within the target sampling rate interval.
+    Assuming time_col starts at 0 and is in seconds.
+    df: input dataframe
+    time_col: column name of the time column
+    target_col: column name of the target column
+    target_sr: target sampling rate
+    """
+    interval = 1 / target_sr
+    duration = (df[time_col].max() // interval) * interval + interval
 
-def clean_watch_data(
-    input_csv_path: str, output_csv_path: str, start_offset: int = 5, duration: int = 500
-):
-    """
-    clean csv data from the Polar Vantage V sports watch.
-    """
-    watch_timecode_pattern = r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}"
-    watch_timecode_match = re.search(watch_timecode_pattern, input_csv_path)
-    watch_timecode_str = watch_timecode_match.group()
-    watch_timecode_format = (
-        "%Y-%m-%d_%H-%M-%S"  # This format should match the pattern in the filename
+    # Create a new time column with the target sampling rate
+    time_slots = [float(i) for i in range(0, int(duration), int(interval))]
+    value_lists = [[] for _ in range(len(time_slots))]
+    for i, row in df.iterrows():
+        time = row[time_col]
+        idx = int(time // interval)
+        value_lists[idx].append(row[target_col])
+
+    # Create a new dataframe with the downsampled values
+    downsampled_df = pd.DataFrame(
+        {
+            time_col: time_slots,
+            target_col: [np.mean(values) if len(values) > 0 else 0 for values in value_lists],
+        }
     )
-    watch_timecode_datetime = datetime.strptime(
-        watch_timecode_str, watch_timecode_format
-    )
-    watch_timecode = pd.Timestamp(watch_timecode_datetime)
-    watch_data = pd.read_csv(
-        input_csv_path, delimiter=",", low_memory=False, skiprows=2, usecols=[1, 2, 9]
-    )
+    return downsampled_df
 
-    # Convert the elapsed time in seconds to a timedelta
-    watch_data["time_elapsed"] = pd.TimedeltaIndex(watch_data["Time"])
-    # Add the timedelta to the start date to get the actual datetime
-    watch_data["time_column"] = watch_timecode + watch_data["time_elapsed"]
 
-    # trim the start of the data
-    watch_start_trimmed = watch_data['time_column'].min() + pd.Timedelta(seconds=start_offset)
-    watch_data = watch_data[watch_data['time_column'] > watch_start_trimmed]
-    # trim the duration of the data
-    watch_time_duration_trimmed = watch_data['time_column'].min() + pd.Timedelta(seconds=duration)
-    # Keep only the rows where the time is less than or equal to that
-    watch_data = watch_data[watch_data['time_column'] <= watch_time_duration_trimmed]
-
-    # Determine the reference time (first timestamp in the column)
-    watch_reference_time = watch_data['time_column'].iloc[0]
-    # Subtract the reference time from the entire column to get a timedelta
-    watch_time_difference = watch_data['time_column'] - watch_reference_time
-    # Convert the timedelta to seconds
-    watch_data['Time'] = watch_time_difference.dt.total_seconds()
-
-    # save output csv file
-    watch_data.to_csv(output_csv_path)
-    print(f"=> Done! cleaned csv file saved to {output_csv_path}")
-
-def clean_phone_data(input_csv_path: str):
+def plot_loudness_hr_brightness(stillstanding_no: int, dataset_dir: str, metadata_path: str = "../metadata.csv", save_path: str = None):
     """
-    clean csv data from Physics Toolbox Sensor Suite.
+    Plot the loudness and heart rate data for a given sample.
     """
-    mobile_data = pd.read_csv(input_csv_path, delimiter=';',decimal=',', low_memory=False)
-    mobile_timecode_pattern = r'\d{4}-\d{2}-\d{2}T\d{2}.\d{2}.\d{2}'
-    mobile_timecode_match = re.search(mobile_timecode_pattern, input_csv_path)
-    mobile_timecode_str = mobile_timecode_match.group()
-    mobile_timecode_format = "%Y-%m-%dT%H.%M.%S" # This format should match the pattern in the filename
-    mobile_timecode_datetime = datetime.strptime(mobile_timecode_str, mobile_timecode_format)
-    mobile_timecode = pd.Timestamp(mobile_timecode_datetime)
-    mobile_data.drop(mobile_data.columns[-2:],axis=1,inplace=True)
+    metadata = pd.read_csv(metadata_path)
 
-    # Replacing n-dash with hyphen
-    mobile_data.replace(to_replace='−', value='-',regex=True, inplace=True)
-    # Replacing comma with dot
-    mobile_data.replace(to_replace=',', value='.',regex=True, inplace=True)
-    # Replacing NAN with zeros
-    mobile_data.replace(to_replace='∞', value='0',regex=True, inplace=True)
-    # Now that the data should have been formatted correctly, we can change to float64
-    mobile_data=mobile_data.astype(float)
+    row = metadata[metadata.StillStandingNo == stillstanding_no].iloc[0]
+    phone_path = os.path.join(dataset_dir, row.processed_phone_path)
+    watch_path = os.path.join(dataset_dir, row.processed_watch_path)
+    phone_data = pd.read_csv(phone_path)
+    loudness = phone_data[['time', 'Gain']]
+    loudness = downsample(loudness, 'time', 'Gain', 1)
+    brightness = phone_data[['time', 'I']]
+    brightness = downsample(brightness, 'time', 'I', 1)
+    hr = pd.read_csv(watch_path)[['Time', 'HR (bpm)']].ffill()
 
-    # remove redundant rows
-    mobile_data.drop_duplicates(subset=['ax','ay','az'], keep='first', inplace=True)
+
+    plt.figure(figsize=(15, 10))
+    plt.subplot(311)
+    plt.plot(hr['Time'], hr['HR (bpm)'], label='HR')
+    plt.title(f"Still Standing No. {stillstanding_no}, {row.Date}")
+    plt.ylabel('Loudness (dB)')
+    plt.grid()
+    plt.subplot(312)
+    plt.plot(brightness['time'],brightness['I'], label='Brightness')
+    plt.ylabel('Brightness (lux)')
+    plt.grid()
+    plt.subplot(313)
+    plt.plot(loudness['time'], loudness['Gain'], label='Loudness')
+    plt.ylabel('Loudness (dB)')
+    plt.xlabel('Time (s)')
+    plt.grid()
+
+    if save_path is None:
+        plt.show()
+    else:
+        plt.savefig(save_path)
+        print(f"=> plot saved to {save_path}")
+
 
 
 def iterate_all_samples(
