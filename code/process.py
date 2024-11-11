@@ -19,17 +19,52 @@ from scipy.signal import savgol_filter
 from matplotlib.ticker import FormatStrFormatter
 
 
-def process_stillstanding(metadata_path: str, output_dir: str, log_path: None):
+def process_stillstanding(
+    dataset_dir: str,
+    stillstanding_no: int | list[int],
+    output_dir: str,
+    metadata_path: str | None = None,
+    modality: str | list[str] = "all",
+):
     """
     Process all stillstanding data.
     """
-    pass
+    if not os.path.exists(output_dir):
+        print(f"=> Creating output directory: {output_dir}")
+        os.makedirs(output_dir, exist_ok=True)
+
+    if isinstance(stillstanding_no, int):
+        try:
+            process_stillstanding_day(
+                dataset_dir,
+                stillstanding_no,
+                os.path.join(output_dir, f"{stillstanding_no:03}"),
+                metadata_path=metadata_path,
+                modality=modality,
+            )
+        except Exception as e:
+            print(f"Error processing stillstanding {stillstanding_no:03}: {e}")
+    elif isinstance(stillstanding_no, list):
+        for idx, no in enumerate(stillstanding_no):
+            try:
+                print(
+                    f"Processing stillstanding {no:03} ({idx+1}/{len(stillstanding_no)})"
+                )
+                process_stillstanding_day(
+                    dataset_dir,
+                    no,
+                    os.path.join(output_dir, f"{no:03}"),
+                    metadata_path=metadata_path,
+                    modality=modality,
+                )
+            except Exception as e:
+                print(f"Error processing stillstanding {no:03}: {e}")
 
 
 def process_stillstanding_day(
+    dataset_dir: str,
     stillstanding_no: int,
     output_dir: str,
-    dataset_dir: str,
     metadata_path: str | None = None,
     modality: str | list[str] = "all",
 ):
@@ -59,17 +94,19 @@ def process_stillstanding_day(
     # load metadata
     metadata = pd.read_csv(metadata_path)
     row = metadata[metadata["StillStandingNo"] == stillstanding_no].iloc[0]
-    print(f"=> Processing stillstanding {stillstanding_no} on {row['Date']}")
+    print(f"=> Processing stillstanding {stillstanding_no} on {row['date']}")
 
     # create output directory
-    os.makedirs(output_dir, exist_ok=True)
+    if not os.path.exists(output_dir):
+        print(f"==> Creating output directory: {output_dir}")
+        os.makedirs(output_dir, exist_ok=True)
 
     # process watch data
     if "watch" in modality:
         print(f"==> Processing watch data")
         watch_timecode = process_watch_data(
             stillstanding_no,
-            os.path.join(dataset_dir, row["source_watch_csv_path"]),
+            os.path.join(dataset_dir, row["watch_source_path"]),
             output_dir,
             start_offset=5,
             duration=500,
@@ -80,10 +117,10 @@ def process_stillstanding_day(
         print(f"==> Processing phone data")
         phone_timecode, phone_sr = process_phone_data(
             stillstanding_no,
-            os.path.join(dataset_dir, row["source_phone_path"]),
+            os.path.join(dataset_dir, row["phone_source_path"]),
             output_dir,
-            clap_start_s=row["Mobile Clap Start"],
-            clap_end_s=row["Mobile Clap End"],
+            clap_start_s=row["phone_clap_start"],
+            clap_end_s=row["phone_clap_end"],
             duration=500,
         )
 
@@ -92,10 +129,10 @@ def process_stillstanding_day(
         print(f"==> Processing audio data")
         process_audio_data(
             stillstanding_no,
-            os.path.join(dataset_dir, row["source_audio_path"]),
+            os.path.join(dataset_dir, row["audio_source_path"]),
             output_dir,
-            clap_start_s=row["Audio Clap Start"],
-            clap_end_s=row["Audio Clap End"],
+            clap_start_s=row["audio_clap_start"],
+            clap_end_s=row["audio_clap_end"],
         )
 
     # process fisheye video data
@@ -103,17 +140,19 @@ def process_stillstanding_day(
         print(f"==> Processing LRV data")
         LRV_list = []
         for i in range(1, 5):
-            if isinstance(row[f"source_video_LRV_{i}_path"], str):
+            if isinstance(row[f"video_source_lrv_path_{i}"], str):
                 # print(f"==> find video path: {row[f'source_video_LRV_{i}_path']}")
                 LRV_list.append(
-                    os.path.join(dataset_dir, row[f"source_video_LRV_{i}_path"])
+                    os.path.join(dataset_dir, row[f"video_source_lrv_path_{i}"])
                 )
+        if len(LRV_list) == 0:
+            raise ValueError("No LRV video files found.")
         process_LRV_video_data(
             stillstanding_no,
             tuple(LRV_list),
             output_dir,
-            clap_start_s=row["Video Clap Start"],
-            clap_end_s=row["Video Clap End"],
+            clap_start_s=row["video_clap_start"],
+            clap_end_s=row["video_clap_end"],
         )
 
     # process 360 video data
@@ -121,9 +160,9 @@ def process_stillstanding_day(
         print(f"==> Processing 360 data")
         spherical_list = []
         for i in range(1, 5):
-            if isinstance(row[f"source_video_360_{i}_path"], str):
+            if isinstance(row[f"video_source_360_path_{i}"], str):
                 spherical_list.append(
-                    os.path.join(dataset_dir, row[f"source_video_360_{i}_path"])
+                    os.path.join(dataset_dir, row[f"video_source_360_path_{i}"])
                 )
         if len(spherical_list) == 0:
             raise ValueError("No 360 video files found.")
@@ -131,8 +170,8 @@ def process_stillstanding_day(
             stillstanding_no,
             tuple(spherical_list),
             output_dir,
-            clap_start_s=row["Video Clap Start"],
-            clap_end_s=row["Video Clap End"],
+            clap_start_s=row["video_clap_start"],
+            clap_end_s=row["video_clap_end"],
             person_shot_crop=(
                 # row["person_shot_crop_height"],
                 # row["person_shot_crop_width"],
@@ -671,7 +710,7 @@ def processed_360_video_data(
     )
 
     # output person shot
-    person_shot_fn_trim = os.path.joint(
+    person_shot_fn_trim = os.path.join(
         output_dir, f"stillstanding_{stillstanding_no:03}_arj_trim_crop.mp4"
     )
 
@@ -718,9 +757,16 @@ def processed_360_video_data(
 
 
 if __name__ == "__main__":
-    process_stillstanding_day(
-        stillstanding_no=1,
+    # process_stillstanding_day(
+    #     stillstanding_no=1,
+    #     dataset_dir="/home/arthur/felles/Research/Users/Alexander/Still Standing",
+    #     output_dir="/home/arthur/felles/Research/Users/Alexander/Still Standing/2-processed/001",
+    #     modality="all",
+    # )
+
+    process_stillstanding(
+        stillstanding_no=[1, 2],
         dataset_dir="/home/arthur/felles/Research/Users/Alexander/Still Standing",
-        output_dir="../test_output",
+        output_dir="/home/arthur/felles/Research/Users/jinyueg/stillstanding/test_output",
         modality="all",
     )
