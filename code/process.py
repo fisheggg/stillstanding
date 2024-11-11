@@ -7,9 +7,9 @@ import os
 import re
 import subprocess
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import av
-import maad
 import librosa
 import pandas as pd
 import numpy as np
@@ -26,11 +26,140 @@ def process_stillstanding(metadata_path: str, output_dir: str, log_path: None):
     pass
 
 
-def process_stillstanding_day(stillstanding_no: int, output_path: str, metadata_path: str = '../metadata_raw.csv'):
+def process_stillstanding_day(
+    stillstanding_no: int,
+    output_dir: str,
+    dataset_dir: str,
+    metadata_path: str | None = None,
+    modality: str | list[str] = "all",
+):
     """
     Process one day of stillstanding data, same function to the original notebook.
     """
-    pass
+    # use default metadata path if not provided
+    if metadata_path is None:
+        metadata_path = Path(__file__).parent.parent / "metadata_raw.csv"
+        metadata_path = metadata_path.resolve().absolute()
+
+    # check modality
+    if isinstance(modality, str):
+        assert modality in ["all", "watch", "phone", "audio", "LRV", "360"]
+        if modality == "all":
+            modality = ["watch", "phone", "audio", "LRV", "360"]
+        else:
+            modality = [modality]
+    elif isinstance(modality, list):
+        for mod in modality:
+            assert mod in ["watch", "phone", "audio", "LRV", "360"]
+    else:
+        raise ValueError(
+            f"modality must be a string or a list of strings. Got '{modality}'"
+        )
+
+    # load metadata
+    metadata = pd.read_csv(metadata_path)
+    row = metadata[metadata["StillStandingNo"] == stillstanding_no].iloc[0]
+    print(f"=> Processing stillstanding {stillstanding_no} on {row['Date']}")
+
+    # create output directory
+    os.makedirs(output_dir, exist_ok=True)
+
+    # process watch data
+    if "watch" in modality:
+        print(f"==> Processing watch data")
+        watch_timecode = process_watch_data(
+            stillstanding_no,
+            os.path.join(dataset_dir, row["source_watch_csv_path"]),
+            output_dir,
+            start_offset=5,
+            duration=500,
+        )
+
+    # process phone data
+    if "phone" in modality:
+        print(f"==> Processing phone data")
+        phone_timecode, phone_sr = process_phone_data(
+            stillstanding_no,
+            os.path.join(dataset_dir, row["source_phone_path"]),
+            output_dir,
+            clap_start_s=row["Mobile Clap Start"],
+            clap_end_s=row["Mobile Clap End"],
+            duration=500,
+        )
+
+    # process audio data
+    if "audio" in modality:
+        print(f"==> Processing audio data")
+        process_audio_data(
+            stillstanding_no,
+            os.path.join(dataset_dir, row["source_audio_path"]),
+            output_dir,
+            clap_start_s=row["Audio Clap Start"],
+            clap_end_s=row["Audio Clap End"],
+        )
+
+    # process fisheye video data
+    if "LRV" in modality:
+        print(f"==> Processing LRV data")
+        LRV_list = []
+        for i in range(1, 5):
+            if isinstance(row[f"source_video_LRV_{i}_path"], str):
+                # print(f"==> find video path: {row[f'source_video_LRV_{i}_path']}")
+                LRV_list.append(
+                    os.path.join(dataset_dir, row[f"source_video_LRV_{i}_path"])
+                )
+        process_LRV_video_data(
+            stillstanding_no,
+            tuple(LRV_list),
+            output_dir,
+            clap_start_s=row["Video Clap Start"],
+            clap_end_s=row["Video Clap End"],
+        )
+
+    # process 360 video data
+    if "360" in modality:
+        print(f"==> Processing 360 data")
+        spherical_list = []
+        for i in range(1, 5):
+            if isinstance(row[f"source_video_360_{i}_path"], str):
+                spherical_list.append(
+                    os.path.join(dataset_dir, row[f"source_video_360_{i}_path"])
+                )
+        if len(spherical_list) == 0:
+            raise ValueError("No 360 video files found.")
+        processed_360_video_data(
+            stillstanding_no,
+            tuple(spherical_list),
+            output_dir,
+            clap_start_s=row["Video Clap Start"],
+            clap_end_s=row["Video Clap End"],
+            person_shot_crop=(
+                # row["person_shot_crop_height"],
+                # row["person_shot_crop_width"],
+                # row["person_shot_crop_xpos"],
+                # row["person_shot_crop_ypos"],
+                1570,
+                int(1570 / 2.4),
+                330,
+                1130,
+            ),
+            room_shot_crop=(
+                # row["room_shot_crop_height"],
+                # row["room_shot_crop_width"],
+                # row["room_shot_crop_xpos"],
+                # row["room_shot_crop_ypos"],
+                2700,
+                1300,
+                700,
+                0,
+            ),
+        )
+
+    print(
+        f"==> Stillstanding No.: {stillstanding_no} processed.",
+        f"==>Modality(s): {modality}.",
+        f"==>Files saved to {output_dir}",
+    )
 
 
 def process_watch_data(
@@ -87,10 +216,10 @@ def process_watch_data(
 
     # save output csv file
     output_csv_path = os.path.join(
-        output_dir, f"stillstanding_{stillstanding_no}_watch.csv"
+        output_dir, f"stillstanding_{stillstanding_no:03}_watch.csv"
     )
     watch_data.to_csv(output_csv_path)
-    print(f"=> Cleaned watch data saved to {output_csv_path}")
+    print(f"==> Cleaned watch data saved to {output_csv_path}")
 
     return watch_timecode
 
@@ -137,11 +266,11 @@ def process_phone_data(
     mobile_data = mobile_data.astype(float)
     # The sampling rate is the total number of samples divided by time
     mobile_sr = len(mobile_data) / mobile_data["time"].iloc[-1]
-    print(f"=> Original sample rate of phone data: {mobile_sr:.2f}")
+    print(f"===> Original sample rate of phone data: {mobile_sr:.2f}")
     # remove redundant rows
     mobile_data.drop_duplicates(subset=["ax", "ay", "az"], keep="first", inplace=True)
     mobile_sr_unique = len(mobile_data) / mobile_data["time"].iloc[-1]
-    print(f"=> Unique sample rate of phone data: {mobile_sr_unique:.2f}")
+    print(f"===> Unique sample rate of phone data: {mobile_sr_unique:.2f}")
     # Convert the elapsed time in seconds to a timedelta
     mobile_data["time_elapsed"] = pd.to_timedelta(mobile_data["time"], unit="s")
     # Add the timedelta to the start date to get the actual datetime
@@ -150,7 +279,7 @@ def process_phone_data(
     mobile_clap_start_s = clap_start_s
     mobile_clap_end_s = clap_end_s
     print(
-        f"=> Triming using clap start and end times: {mobile_clap_start_s} - {mobile_clap_end_s}"
+        f"===> Triming using clap start and end times: {mobile_clap_start_s} - {mobile_clap_end_s}"
     )
     # First we trim to the first clap
     mobile_time_after_first_clap = mobile_data["time_column"].min() + pd.Timedelta(
@@ -183,10 +312,10 @@ def process_phone_data(
 
     # save output csv file
     output_csv_path = os.path.join(
-        output_dir, f"stillstanding_{stillstanding_no}_phone.csv"
+        output_dir, f"stillstanding_{stillstanding_no:03}_phone.csv"
     )
     mobile_data_standstill.to_csv(output_csv_path)
-    print(f"=> Cleaned phone data saved to {output_csv_path}")
+    print(f"==> Cleaned phone data saved to {output_csv_path}")
     return mobile_timecode, mobile_sr
 
 
@@ -194,8 +323,8 @@ def process_audio_data(
     stillstanding_no: int,
     input_audio_path: str,
     output_dir: str,
-    clap_start_s: int,
-    clap_end_s: int,
+    clap_start_s: str,
+    clap_end_s: str,
 ):
     """
     Trim audio files and save to output_dir.
@@ -205,19 +334,23 @@ def process_audio_data(
     3. clap at the beginning
     4. clap at the end
     """
-    audio_clap_start = str(timedelta(seconds=clap_start_s))
-    audio_clap_end = str(timedelta(seconds=clap_end_s))
+    audio_clap_start = clap_start_s
+    audio_clap_end = clap_end_s
     print(
-        f"=> Triming audio using clap start and end times: {audio_clap_start} - {audio_clap_end}"
+        f"===> Triming audio using clap start and end times: {audio_clap_start} - {audio_clap_end}"
     )
 
     # output synced audio
     output_synced_audio_path = os.path.join(
-        output_dir, f"stillstanding_{stillstanding_no}_ambisonics.wav"
+        output_dir, f"stillstanding_{stillstanding_no:03}_ambisonics.wav"
     )
     subprocess.run(
         [
             "ffmpeg",
+            "-hide_banner",
+            "-v",
+            "warning",
+            "-stats",
             "-y",
             "-i",
             input_audio_path,
@@ -241,11 +374,15 @@ def process_audio_data(
     audio_standstill_start = audio_new_time_start.strftime("%H:%M:%S")
     audio_standstill_end = audio_new_time_end.strftime("%H:%M:%S")
     output_trimmed_audio_path = os.path.join(
-        output_dir, f"stillstanding_{stillstanding_no}_ambisonics_trim.wav"
+        output_dir, f"stillstanding_{stillstanding_no:03}_ambisonics_trim.wav"
     )
     subprocess.run(
         [
             "ffmpeg",
+            "-hide_banner",
+            "-v",
+            "warning",
+            "-stats",
             "-y",
             "-i",
             input_audio_path,
@@ -270,11 +407,15 @@ def process_audio_data(
     # Convert back to a string
     audio_first_clap_end_time = audio_first_clap_end.strftime("%H:%M:%S")
     audio_last_clap_begin_time = audio_last_clap_begin.strftime("%H:%M:%S")
-    audio_first_clap_fn = "stillstanding_" + str(stillstanding_no) + "_clap_first.wav"
-    audio_last_clap_fn = "stillstanding_" + str(stillstanding_no) + "_clap_last.wav"
+    audio_first_clap_fn = f"stillstanding_{stillstanding_no:03}_clap_first.wav"
+    audio_last_clap_fn = f"stillstanding_{stillstanding_no:03}_clap_last.wav"
     subprocess.run(
         [
             "ffmpeg",
+            "-hide_banner",
+            "-v",
+            "warning",
+            "-stats",
             "-y",
             "-i",
             input_audio_path,
@@ -290,6 +431,10 @@ def process_audio_data(
     subprocess.run(
         [
             "ffmpeg",
+            "-hide_banner",
+            "-v",
+            "warning",
+            "-stats",
             "-y",
             "-i",
             input_audio_path,
@@ -303,10 +448,10 @@ def process_audio_data(
         ]
     )
 
-    print(f"=> All audio files saved to {output_dir}")
+    print(f"==> All audio files saved to {output_dir}")
 
 
-def process_fisheye_video_data(
+def process_LRV_video_data(
     stillstanding_no: int,
     input_video_list: tuple[str],
     output_dir: str,
@@ -314,13 +459,11 @@ def process_fisheye_video_data(
     clap_end_s: str,
 ):
     """
-    Process fisheye video data.
-    5 video files are saved:
+    Process fisheye LRV video data.
+    3 video files are saved:
     1. concatenated spherical video
     2. synced spherical video
     3. synced and trimmed spherical video
-    4. synced and trimmed person shot
-    5. synced and trimmed room shot
 
     Parameters
     ----------
@@ -339,7 +482,7 @@ def process_fisheye_video_data(
     room_shotcrop : tuple[int]
         Crop parameters for the room shot. (height, width, xpos, ypos)
     """
-    print(f"=> Processing video data, found {len(input_video_list)} videos")
+    print(f"==> Processing video data, found {len(input_video_list)} videos")
     # create txt file with the list of videos
     list_path = os.path.join(output_dir, "mylist.txt")
     with open(list_path, "w") as f:
@@ -347,10 +490,16 @@ def process_fisheye_video_data(
             f.write(f"file '{video}'\n")
 
     # output concatenated video
-    spherical_path = os.path.join(output_dir, f"stillstanding_{stillstanding_no}_spherical.mp4")
+    spherical_path = os.path.join(
+        output_dir, f"stillstanding_{stillstanding_no:03}_spherical.mp4"
+    )
     subprocess.run(
         [
             "ffmpeg",
+            "-hide_banner",
+            "-v",
+            "warning",
+            "-stats",
             "-y",
             "-f",
             "concat",
@@ -360,17 +509,23 @@ def process_fisheye_video_data(
             list_path,
             "-c",
             "copy",
-            spherical_path
+            spherical_path,
         ]
     )
 
     # output synced video
     video_clap_start = clap_start_s
     video_clap_end = clap_end_s
-    synced_path = os.path.join(output_dir, f"stillstanding_{stillstanding_no}_spherical_clap.mp4")
+    synced_path = os.path.join(
+        output_dir, f"stillstanding_{stillstanding_no:03}_spherical_clap.mp4"
+    )
     subprocess.run(
         [
             "ffmpeg",
+            "-hide_banner",
+            "-v",
+            "warning",
+            "-stats",
             "-y",
             "-i",
             spherical_path,
@@ -380,23 +535,29 @@ def process_fisheye_video_data(
             str(video_clap_end),
             "-c",
             "copy",
-            synced_path
+            synced_path,
         ]
     )
 
     # output synced and trimmed video
-    trimmed_path = os.path.join(output_dir, f"stillstanding_{stillstanding_no}_spherical_trim.mp4")
+    trimmed_path = os.path.join(
+        output_dir, f"stillstanding_{stillstanding_no:03}_spherical_trim.mp4"
+    )
     # Convert time string to a datetime object
-    video_time_object = datetime.strptime(video_clap_start, '%H:%M:%S')
+    video_time_object = datetime.strptime(video_clap_start, "%H:%M:%S")
     # Add 20 seconds to the beginning and a 500 second duration
     video_new_time_start = video_time_object + timedelta(seconds=20)
     video_new_time_end = video_new_time_start + timedelta(seconds=500)
     # Convert back to a string
-    video_standstill_start = video_new_time_start.strftime('%H:%M:%S')
-    video_standstill_end = video_new_time_end.strftime('%H:%M:%S')
+    video_standstill_start = video_new_time_start.strftime("%H:%M:%S")
+    video_standstill_end = video_new_time_end.strftime("%H:%M:%S")
     subprocess.run(
         [
             "ffmpeg",
+            "-hide_banner",
+            "-v",
+            "warning",
+            "-stats",
             "-y",
             "-i",
             spherical_path,
@@ -406,12 +567,12 @@ def process_fisheye_video_data(
             video_standstill_end,
             "-c",
             "copy",
-            trimmed_path
+            trimmed_path,
         ]
     )
 
     os.remove(list_path)
-    print(f"=> All fisheye video files saved to {output_dir}")
+    print(f"==> All fisheye video files saved to {output_dir}")
 
 
 def processed_360_video_data(
@@ -420,106 +581,146 @@ def processed_360_video_data(
     output_dir: str,
     clap_start_s: str,
     clap_end_s: str,
-    person_shotcrop: tuple[int],
-    room_shotcrop: tuple[int],
+    person_shot_crop: tuple[int],
+    room_shot_crop: tuple[int],
 ):
     """
     Process 360 video data.
     2 video files are saved:
     """
     # create txt file with the list of videos
-    list_path = os.path.join(output_dir, "mylist.txt")
+    list_path = os.path.join(output_dir, "video_list_360.txt")
     with open(list_path, "w") as f:
         for video in input_video_list:
             f.write(f"file '{video}'\n")
 
-    # I have had problems finding a format that supports all the content of the original .360 files. 
-    video_out_fn_trim = 'stillstanding_' + str(stillstanding_no) + '_trim.mkv'
+    # I have had problems finding a format that supports all the content of the original .360 files.
+    video_out_fn_trim = os.path.join(
+        output_dir, f"stillstanding_{stillstanding_no:03}_trim.mkv"
+    )
     # Instead we create four separate tracks to keep the valuable media:
-    video_out_fn_track0 = 'stillstanding_' + str(stillstanding_no) + '_trim_track0.mkv'
-    video_out_fn_track5 = 'stillstanding_' + str(stillstanding_no) + '_trim_track5.mkv'
-    video_out_fn_track1 = 'stillstanding_' + str(stillstanding_no) + '_trim_track1.aac'
-    video_out_fn_track6 = 'stillstanding_' + str(stillstanding_no) + '_trim_track6.wav'
+    video_out_fn_track0 = os.path.join(
+        output_dir, f"stillstanding_{stillstanding_no:03}_trim_track0.mkv"
+    )
+    video_out_fn_track5 = os.path.join(
+        output_dir, f"stillstanding_{stillstanding_no:03}_trim_track5.mkv"
+    )
+    video_out_fn_track1 = os.path.join(
+        output_dir, f"stillstanding_{stillstanding_no:03}_trim_track1.aac"
+    )
+    video_out_fn_track6 = os.path.join(
+        output_dir, f"stillstanding_{stillstanding_no:03}_trim_track6.wav"
+    )
 
     # extract each of the audio and video tracks as separate files
     subprocess.run(
         [
-            'ffmpeg',
-            '-y',
-            '-i',
+            "ffmpeg",
+            "-hide_banner",
+            "-v",
+            "warning",
+            "-stats",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
             list_path,
-            '-ss',
+            "-ss",
             clap_start_s,
-            '-to',
+            "-to",
             clap_end_s,
-            '-map',
-            '0:0',
-            '-map',
-            '0:6', 
-            '-c',
-            'copy',
+            "-map",
+            "0:0",
+            "-map",
+            "0:6",
+            "-c",
+            "copy",
             video_out_fn_track0,
-            '-ss',
+            "-ss",
             clap_start_s,
-            '-to',
+            "-to",
             clap_end_s,
-            '-map',
-            '0:5',
-            '-map',
-            '0:6',
-            '-c',
-            'copy',
+            "-map",
+            "0:5",
+            "-map",
+            "0:6",
+            "-c",
+            "copy",
             video_out_fn_track5,
-            '-ss',
+            "-ss",
             clap_start_s,
-            '-to',
+            "-to",
             clap_end_s,
-            '-map',
-            '0:1',
-            '-c',
-            'copy',
+            "-map",
+            "0:1",
+            "-c",
+            "copy",
             video_out_fn_track1,
-            '-ss',
+            "-ss",
             clap_start_s,
-            '-to',
+            "-to",
             clap_end_s,
-            '-map',
-            '0:6',
-            '-c',
-            'copy',
-            video_out_fn_track6 
+            "-map",
+            "0:6",
+            "-c",
+            "copy",
+            video_out_fn_track6,
         ]
     )
 
     # output person shot
-    person_shot_fn_trim = 'stillstanding_' + str(stillstanding_no) + '_arj_trim_crop.mp4'
+    person_shot_fn_trim = os.path.joint(
+        output_dir, f"stillstanding_{stillstanding_no:03}_arj_trim_crop.mp4"
+    )
+
     subprocess.run(
         [
-            'ffmpeg',
-            '-y',
-            '-i',
+            "ffmpeg",
+            "-hide_banner",
+            "-v",
+            "warning",
+            "-stats",
+            "-y",
+            "-i",
             video_out_fn_track5,
-            '-vf',
-            f'crop={person_shotcrop[0]}:{person_shotcrop[1]}:{person_shotcrop[2]}:{person_shotcrop[3]},transpose=2',
-            person_shot_fn_trim
+            "-vf",
+            f"crop={person_shot_crop[0]}:{person_shot_crop[1]}:{person_shot_crop[2]}:{person_shot_crop[3]},transpose=2",
+            person_shot_fn_trim,
         ]
     )
 
     # output room shot
-    room_shot_fn_trim = 'stillstanding_' + str(stillstanding_no) + '_room_trim_crop.mp4'
+    room_shot_fn_trim = os.path.join(
+        output_dir, f"stillstanding_{stillstanding_no:03}_room_trim_crop.mp4"
+    )
     subprocess.run(
         [
-            'ffmpeg',
-            '-y',
-            '-i',
+            "ffmpeg",
+            "-hide_banner",
+            "-v",
+            "warning",
+            "-stats",
+            "-y",
+            "-i",
             video_out_fn_track0,
-            '-vf',
-            f'crop={room_shotcrop[0]}:{room_shotcrop[1]}:{room_shotcrop[2]}:{room_shotcrop[3]}',
-            '-b:v',
-            '9M',
-            room_shot_fn_trim
+            "-vf",
+            f"crop={room_shot_crop[0]}:{room_shot_crop[1]}:{room_shot_crop[2]}:{room_shot_crop[3]}",
+            "-b:v",
+            "9M",
+            room_shot_fn_trim,
         ]
     )
 
     os.remove(list_path)
-    print(f"=> All 360 video files saved to {output_dir}")
+    print(f"==> All 360 video files saved to {output_dir}")
+
+
+if __name__ == "__main__":
+    process_stillstanding_day(
+        stillstanding_no=1,
+        dataset_dir="/home/arthur/felles/Research/Users/Alexander/Still Standing",
+        output_dir="../test_output",
+        modality="all",
+    )
