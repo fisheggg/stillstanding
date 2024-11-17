@@ -2,3 +2,5 @@ __pycache__/
 test_output/
 test*
 loudness_hr.csv
+metadata_raw_old.csv
+metadata_processed.csv
