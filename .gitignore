@@ -3,3 +3,5 @@ test_output/
 test*
 loudness_hr.csv
 metadata_raw_old.csv
+sed_results/
+aoa_results/
