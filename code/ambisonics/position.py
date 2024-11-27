@@ -61,6 +61,10 @@ class Position(object):
         if c_type is None or c_type == 'polar':
             print('Polar (phi,nu,r):  (%.2f, %.2f, %.2f)' % (self.phi, self.nu, self.r))
 
+    def __str__(self):
+        return 'Cartesian (x,y,z): (%.2f, %.2f, %.2f)\nPolar (phi,nu,r):  (%.2f, %.2f, %.2f)' % \
+               (self.x, self.y, self.z, self.phi, self.nu, self.r)
+
 
 class PositionalSource(object):
     def __init__(self, signal, position, sample_rate=44800):

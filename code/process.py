@@ -94,7 +94,7 @@ def process_stillstanding_day(
     # load metadata
     metadata = pd.read_csv(metadata_path)
     row = metadata[metadata["StillStandingNo"] == stillstanding_no].iloc[0]
-    print(f"=> Processing stillstanding {stillstanding_no} on {row['date']}")
+    print(f"=> Processing stillstanding {stillstanding_no:03} on {row['date']}")
 
     # create output directory
     if not os.path.exists(output_dir):
@@ -768,5 +768,5 @@ if __name__ == "__main__":
         stillstanding_no=[1, 2],
         dataset_dir="/home/arthur/felles/Research/Users/Alexander/Still Standing",
         output_dir="/home/arthur/felles/Research/Users/jinyueg/stillstanding/test_output",
-        modality="all",
+        modality=['watch', 'phone', 'audio', 'LRV'],
     )

@@ -4,4 +4,4 @@ test*
 loudness_hr.csv
 metadata_raw_old.csv
 sed_results/
-aoa_results/
+doa_results/
